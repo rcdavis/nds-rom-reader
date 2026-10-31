@@ -113,6 +113,12 @@ static int obj_pixel(const NdsTileSet *ts, uint64_t base, int wt, int bpp, int x
 
 NdsResult nds_render_cell(const NdsCellBank *cb, uint32_t cell, const NdsTileSet *ts,
                           const NdsPalette *pal, NdsImage *out) {
+    return nds_render_cell_ex(cb, cell, ts, pal, out, NULL, NULL);
+}
+
+NdsResult nds_render_cell_ex(const NdsCellBank *cb, uint32_t cell, const NdsTileSet *ts,
+                             const NdsPalette *pal, NdsImage *out, int *origin_x,
+                             int *origin_y) {
     if (!cb || !ts || !out || !ts->data || cell >= cb->cell_count) return NDS_ERR_ARG;
     memset(out, 0, sizeof *out);
     const NdsCell *c = &cb->cells[cell];
@@ -135,6 +141,8 @@ NdsResult nds_render_cell(const NdsCellBank *cb, uint32_t cell, const NdsTileSet
     out->height = (uint32_t)H;
     out->rgba = calloc((size_t)W * H, 4);
     if (!out->rgba) return NDS_ERR_NOMEM;
+    if (origin_x) *origin_x = -minx;
+    if (origin_y) *origin_y = -miny;
 
     /* Lower OAM indices have higher priority, so draw them last. */
     for (uint32_t k = c->oam_count; k-- > 0;) {

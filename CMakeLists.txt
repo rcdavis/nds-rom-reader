@@ -4,7 +4,7 @@ project(nds-rom-reader C)
 set(CMAKE_C_STANDARD 99)
 set(CMAKE_C_STANDARD_REQUIRED ON)
 
-add_library(ndsrom src/ndsrom.c src/ndscomp.c src/ndsgfx.c src/ndspng.c src/ndscell.c)
+add_library(ndsrom src/ndsrom.c src/ndscomp.c src/ndsgfx.c src/ndspng.c src/ndscell.c src/ndsanim.c src/ndsgif.c)
 target_include_directories(ndsrom PUBLIC include)
 if(NOT MSVC)
   target_compile_options(ndsrom PRIVATE -Wall -Wextra)

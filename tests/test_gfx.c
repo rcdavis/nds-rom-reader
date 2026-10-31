@@ -83,6 +83,30 @@ static void test_cells(void) {
     CHECK(img.width == 48 && img.height == 16);
     CHECK(img.rgba[3] == 255); /* top-left pixel belongs to the first OAM */
     nds_image_free(&img);
+
+    /* Real-layout NANR: one sequence, one frame (cell 0, 4/60 s). */
+    const uint8_t nanr[] = {
+        'R','N','A','N', 0xFF,0xFE,0,1, 0x6F,0,0,0, 0x10,0,3,0,
+        'K','N','B','A', 0x3C,0,0,0, 1,0, 1,0, 0x18,0,0,0,
+        0x28,0,0,0, 0x30,0,0,0, 0,0,0,0, 0,0,0,0,
+        1,0, 0,0, 0,0, 1,0, 2,0,0,0, 0,0,0,0,
+        0,0,0,0, 4,0, 0xEF,0xBE, 0,0, 0xCC,0xCC};
+    NdsAnimBank ab;
+    NdsAnimation anim;
+    CHECK(nds_animbank_parse(nanr, sizeof nanr, &ab) == NDS_OK);
+    CHECK(ab.seq_count == 1 && ab.frame_count == 1 && ab.frames[0].duration == 4);
+    CHECK(nds_render_anim(&ab, 0, &cb, &ts, NULL, &anim) == NDS_OK);
+    CHECK(anim.count == 1 && anim.width == 48 && anim.height == 16 && anim.loop);
+    CHECK(nds_write_gif("test_out.gif", &anim) == NDS_OK);
+    FILE *gf = fopen("test_out.gif", "rb");
+    char magic[7] = {0};
+    CHECK(gf && fread(magic, 1, 6, gf) == 6 && strcmp(magic, "GIF89a") == 0);
+    if (gf) fclose(gf);
+    remove("test_out.gif");
+    nds_animation_free(&anim);
+    nds_animbank_free(&ab);
+    CHECK(nds_animbank_parse(nanr, 20, &ab) == NDS_ERR_FORMAT);
+
     CHECK(nds_render_cell_atlas(&cb, &ts, NULL, &img) == NDS_OK);
     nds_image_free(&img);
     nds_tileset_free(&ts);

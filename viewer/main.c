@@ -27,7 +27,12 @@ static void usage(const char *p) {
             "                       render an NCGR graphic; --scr applies a tile map, --cer\n"
             "                       assembles sprites from an NCER cell bank. A palette is\n"
             "                       found from same-named files if omitted\n"
-            "  png-all <dir>        render every NCGR graphic in the ROM to PNG files\n",
+            "  png-all <dir>        render every NCGR graphic in the ROM to PNG files\n"
+            "  anim <path> <prefix> [--pal <path>] [--cer <path>] [--anr <path>]\n"
+            "                       write each NANR sequence of a sprite as <prefix>_<n>.gif;\n"
+            "                       palette, cells and animations are found from same-named\n"
+            "                       files if omitted\n"
+            "  anim-all <dir>       write animations for every sprite in the ROM\n",
             p);
 }
 
@@ -270,6 +275,106 @@ static int cmd_png_all(const NdsRom *rom, const char *dir) {
     return failed ? 1 : 0;
 }
 
+typedef struct {
+    const char *pal, *cer, *anr;
+} AnimOpts;
+
+/* Looks up the palette/cell/animation files that belong with `g`. */
+static void find_anim_set(const NdsRom *rom, const NdsFile *g, const NdsKind *kinds,
+                          AnimOpts *o) {
+    for (size_t j = 0; j < nds_file_count(rom); j++) {
+        const NdsFile *c = nds_file_at(rom, j);
+        if (c == g || !same_set(g, c)) continue;
+        NdsKind k = kinds ? kinds[j] : kind_of(rom, c);
+        if (k == NDS_KIND_NCLR && !o->pal) o->pal = c->path;
+        if (k == NDS_KIND_NCER && !o->cer) o->cer = c->path;
+        if (k == NDS_KIND_NANR && !o->anr) o->anr = c->path;
+    }
+}
+
+/* Writes one GIF per sequence. Returns the number written, or -1 on a load error. */
+static int write_anims(const NdsRom *rom, const char *gfx, const AnimOpts *o,
+                       const char *prefix) {
+    uint8_t *d = NULL;
+    uint32_t n;
+    NdsTileSet ts = {0};
+    NdsPalette pal = {0};
+    NdsCellBank cb = {0};
+    NdsAnimBank ab = {0};
+    int written = -1;
+
+    NdsResult r = load_unpacked(rom, gfx, &d, &n);
+    if (r == NDS_OK) r = nds_tileset_parse(d, n, &ts);
+    free(d);
+    d = NULL;
+    if (r != NDS_OK) { fprintf(stderr, "%s: not a valid NCGR (%s)\n", gfx, nds_strerror(r)); goto done; }
+
+    if (o->pal) {
+        r = load_unpacked(rom, o->pal, &d, &n);
+        if (r == NDS_OK) r = nds_palette_parse(d, n, &pal);
+        free(d);
+        d = NULL;
+        if (r != NDS_OK) { fprintf(stderr, "%s: bad palette (%s)\n", o->pal, nds_strerror(r)); goto done; }
+    }
+    if (!o->cer || !o->anr) { fprintf(stderr, "%s: no cell/animation files found\n", gfx); goto done; }
+    r = load_unpacked(rom, o->cer, &d, &n);
+    if (r == NDS_OK) r = nds_cellbank_parse(d, n, &cb);
+    free(d);
+    d = NULL;
+    if (r != NDS_OK) { fprintf(stderr, "%s: bad cell bank (%s)\n", o->cer, nds_strerror(r)); goto done; }
+    r = load_unpacked(rom, o->anr, &d, &n);
+    if (r == NDS_OK) r = nds_animbank_parse(d, n, &ab);
+    free(d);
+    d = NULL;
+    if (r != NDS_OK) { fprintf(stderr, "%s: bad animation bank (%s)\n", o->anr, nds_strerror(r)); goto done; }
+
+    written = 0;
+    char *out = malloc(strlen(prefix) + 16);
+    if (!out) { written = -1; goto done; }
+    for (uint32_t i = 0; i < ab.seq_count; i++) {
+        NdsAnimation a;
+        if (nds_render_anim(&ab, i, &cb, &ts, o->pal ? &pal : NULL, &a) != NDS_OK) continue;
+        sprintf(out, "%s_%u.gif", prefix, i);
+        if (nds_write_gif(out, &a) == NDS_OK) written++;
+        else fprintf(stderr, "cannot write %s\n", out);
+        nds_animation_free(&a);
+    }
+    free(out);
+done:
+    nds_tileset_free(&ts);
+    nds_palette_free(&pal);
+    nds_cellbank_free(&cb);
+    nds_animbank_free(&ab);
+    return written;
+}
+
+static int cmd_anim_all(const NdsRom *rom, const char *dir) {
+    size_t count = nds_file_count(rom);
+    NdsKind *kinds = calloc(count, sizeof *kinds);
+    if (!kinds) return 1;
+    for (size_t i = 0; i < count; i++) kinds[i] = kind_of(rom, nds_file_at(rom, i));
+
+    size_t sprites = 0, gifs = 0, failed = 0;
+    for (size_t i = 0; i < count; i++) {
+        if (kinds[i] != NDS_KIND_NCGR) continue;
+        const NdsFile *g = nds_file_at(rom, i);
+        AnimOpts o = {0};
+        find_anim_set(rom, g, kinds, &o);
+        if (!o.cer || !o.anr) continue;
+
+        char *prefix = malloc(strlen(dir) + strlen(g->path) + 2);
+        if (!prefix) break;
+        sprintf(prefix, "%s/%s", dir, g->path);
+        int n = mkdirs(prefix) == 0 ? write_anims(rom, g->path, &o, prefix) : -1;
+        free(prefix);
+        if (n < 0) failed++;
+        else { sprites++; gifs += (size_t)n; }
+    }
+    free(kinds);
+    printf("Wrote %zu animations for %zu sprites to %s (%zu failed)\n", gifs, sprites, dir, failed);
+    return failed ? 1 : 0;
+}
+
 int main(int argc, char **argv) {
     if (argc < 2) { usage(argv[0]); return 2; }
     NdsResult r;
@@ -286,6 +391,28 @@ int main(int argc, char **argv) {
     else if (!strcmp(cmd, "list")) cmd_list(rom);
     else if (!strcmp(cmd, "extract-all") && argc > 3) rc = cmd_extract_all(rom, argv[3]);
     else if (!strcmp(cmd, "png-all") && argc > 3) rc = cmd_png_all(rom, argv[3]);
+    else if (!strcmp(cmd, "anim-all") && argc > 3) rc = cmd_anim_all(rom, argv[3]);
+    else if (!strcmp(cmd, "anim") && argc > 4) {
+        AnimOpts o = {0};
+        for (int i = 5; i + 1 < argc; i += 2) {
+            if (!strcmp(argv[i], "--pal")) o.pal = argv[i + 1];
+            else if (!strcmp(argv[i], "--cer")) o.cer = argv[i + 1];
+            else if (!strcmp(argv[i], "--anr")) o.anr = argv[i + 1];
+            else { usage(argv[0]); nds_close(rom); return 2; }
+        }
+        const NdsFile *g = nds_find_file(rom, argv[3]);
+        if (!g) { fprintf(stderr, "File not found: %s\n", argv[3]); rc = 1; }
+        else {
+            AnimOpts found = {0};
+            find_anim_set(rom, g, NULL, &found);
+            if (!o.pal) o.pal = found.pal;
+            if (!o.cer) o.cer = found.cer;
+            if (!o.anr) o.anr = found.anr;
+            int n = write_anims(rom, argv[3], &o, argv[4]);
+            if (n >= 0) printf("Wrote %d animations\n", n);
+            rc = n < 0;
+        }
+    }
     else if (!strcmp(cmd, "unpack") && argc > 4) rc = cmd_unpack(rom, argv[3], argv[4]);
     else if (!strcmp(cmd, "png") && argc > 4) {
         RenderOpts o = {0};

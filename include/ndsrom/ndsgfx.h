@@ -104,9 +104,53 @@ void nds_cellbank_free(NdsCellBank *cb);
 NdsResult nds_render_cell(const NdsCellBank *cb, uint32_t cell, const NdsTileSet *ts,
                           const NdsPalette *pal, NdsImage *out);
 
+/* Like nds_render_cell, also reporting where the cell's origin lies in the image
+   (the image's top-left is at -origin_x/-origin_y relative to the cell origin). */
+NdsResult nds_render_cell_ex(const NdsCellBank *cb, uint32_t cell, const NdsTileSet *ts,
+                             const NdsPalette *pal, NdsImage *out, int *origin_x,
+                             int *origin_y);
+
 /* Renders every cell into a grid atlas. */
 NdsResult nds_render_cell_atlas(const NdsCellBank *cb, const NdsTileSet *ts,
                                 const NdsPalette *pal, NdsImage *out);
+
+/* ---- Animation banks (NANR): sequences of cell frames ---- */
+
+typedef struct {
+    uint16_t cell;
+    int16_t tx, ty;       /* translation (0 unless the element type carries one) */
+    uint16_t duration;    /* in 1/60 s */
+} NdsAnimFrame;
+
+typedef struct {
+    uint32_t first_frame, frame_count, loop_start;
+    uint16_t type;        /* 0 index, 1 index+SRT, 2 index+translate */
+    uint32_t play_mode;   /* 1 forward, 2 forward loop, 3 reverse, 4 reverse loop */
+} NdsAnimSeq;
+
+typedef struct {
+    uint32_t seq_count, frame_count;
+    NdsAnimSeq *seqs;
+    NdsAnimFrame *frames;
+} NdsAnimBank;
+
+NdsResult nds_animbank_parse(const uint8_t *data, size_t size, NdsAnimBank *out);
+void nds_animbank_free(NdsAnimBank *ab);
+
+typedef struct {
+    uint32_t width, height, count;
+    uint8_t *rgba;        /* count frames of width*height*4, back to back */
+    uint16_t *duration;   /* per frame, 1/60 s */
+    int loop;
+} NdsAnimation;
+
+/* Renders a sequence onto a shared canvas so frames stay aligned. Rotation and
+   scaling in type-1 sequences are ignored. */
+NdsResult nds_render_anim(const NdsAnimBank *ab, uint32_t seq, const NdsCellBank *cb,
+                          const NdsTileSet *ts, const NdsPalette *pal, NdsAnimation *out);
+void nds_animation_free(NdsAnimation *a);
+
+NdsResult nds_write_gif(const char *path, const NdsAnimation *anim);
 
 NdsResult nds_write_png(const char *path, const NdsImage *img);
 
