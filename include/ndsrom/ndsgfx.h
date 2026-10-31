@@ -7,7 +7,7 @@
 extern "C" {
 #endif
 
-/* ---- Compression (BIOS-style: 0x10 LZ77, 0x11 LZ77 ext, 0x30 RLE) ---- */
+/* ---- Compression (BIOS-style: 0x10 LZ77, 0x11 LZ77 ext, 0x30 RLE, 0x40 Golden Sun LZ) ---- */
 
 int nds_is_compressed(const uint8_t *data, size_t size);
 

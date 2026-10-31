@@ -1,4 +1,5 @@
 #include "ndsrom/ndsgfx.h"
+#include "ndsrom/ndsmodel.h"
 #include "ndsrom/ndssdat.h"
 #include "ndsrom/ndstext.h"
 
@@ -25,6 +26,11 @@ static void usage(const char *p) {
             "  extract <path> <out> extract one file\n"
             "  extract-all <dir>    extract every file, preserving directories\n"
             "  unpack <path> <out>  extract a file, decompressing it if needed\n"
+            "  tex <path> <outdir>  export every texture of an NSBTX/NSBMD as PNG\n"
+            "  model <path> <outdir> [--tex <nsbtx>]  export an NSBMD as OBJ/MTL/PNG\n"
+            "  render <path> <out.png> [--tex <nsbtx>] [--yaw N] [--pitch N] [--size N]\n"
+            "                       software preview of an NSBMD\n"
+            "  model-all <outdir>   export and preview every NSBMD\n"
             "  png <path> <out.png> [--pal <path>] [--scr <path>] [--cer <path>] [--width <tiles>] [--bank <n>]\n"
             "                       render an NCGR graphic; --scr applies a tile map, --cer\n"
             "                       assembles sprites from an NCER cell bank. A palette is\n"
@@ -524,6 +530,131 @@ static int cmd_audio(const NdsRom *rom, const char *path, const char *dir) {
     return failed ? 1 : 0;
 }
 
+static char *sibling_tex(const char *path) {
+    size_t n = strlen(path);
+    char *t = malloc(n + 8);
+    if (!t) return NULL;
+    strcpy(t, path);
+    char *dot = strrchr(t, '.');
+    if (!dot || dot < strrchr(t, '/')) { free(t); return NULL; }
+    strcpy(dot, ".nsbtx");
+    return t;
+}
+
+static const char *base_name(const char *p) {
+    const char *s = strrchr(p, '/');
+    return s ? s + 1 : p;
+}
+
+/* Loads a model plus textures (embedded, explicit, or the same-stem .nsbtx). */
+static int load_model(const NdsRom *rom, const char *path, const char *texpath, NdsModelFile *mf,
+                      NdsTexSet *ext) {
+    uint8_t *d;
+    uint32_t n;
+    NdsResult r = load_unpacked(rom, path, &d, &n);
+    if (r == NDS_OK) { r = nds_modelfile_parse(d, n, mf); free(d); }
+    if (r != NDS_OK) { fprintf(stderr, "%s: %s\n", path, nds_strerror(r)); return 1; }
+    memset(ext, 0, sizeof *ext);
+    if (mf->has_tex && !texpath) return 0;
+    char *auto_path = texpath ? NULL : sibling_tex(path);
+    const char *tp = texpath ? texpath : auto_path;
+    if (tp && nds_find_file(rom, tp) && load_unpacked(rom, tp, &d, &n) == NDS_OK) {
+        if (nds_texset_parse(d, n, ext) != NDS_OK) memset(ext, 0, sizeof *ext);
+        free(d);
+    } else if (texpath) fprintf(stderr, "%s: cannot load textures\n", texpath);
+    free(auto_path);
+    return 0;
+}
+
+static int cmd_tex(const NdsRom *rom, const char *path, const char *dir) {
+    uint8_t *d;
+    uint32_t n;
+    NdsResult r = load_unpacked(rom, path, &d, &n);
+    NdsTexSet ts;
+    if (r == NDS_OK) { r = nds_texset_parse(d, n, &ts); free(d); }
+    if (r != NDS_OK) { fprintf(stderr, "%s: %s\n", path, nds_strerror(r)); return 1; }
+    int rc = 0;
+    for (uint32_t i = 0; i < ts.tex_count; i++) {
+        NdsImage img;
+        char out[1024];
+        snprintf(out, sizeof out, "%s/%s.png", dir, ts.tex[i].name);
+        if (mkdirs(out) || nds_texset_decode(&ts, i, -1, &img) != NDS_OK) { rc = 1; continue; }
+        if (nds_write_png(out, &img) != NDS_OK) rc = 1;
+        free(img.rgba);
+    }
+    printf("%u textures, %u palettes\n", ts.tex_count, ts.pal_count);
+    nds_texset_free(&ts);
+    return rc;
+}
+
+static int model_export(const NdsRom *rom, const char *path, const char *dir, const char *texpath,
+                        int preview, float yaw, float pitch, uint32_t size) {
+    NdsModelFile mf;
+    NdsTexSet ext;
+    if (load_model(rom, path, texpath, &mf, &ext)) return 1;
+    const NdsTexSet *ts = mf.has_tex && !ext.tex_count ? &mf.tex : &ext;
+    int rc = 0;
+    for (uint32_t i = 0; i < mf.model_count; i++) {
+        const NdsModel *m = &mf.models[i];
+        char base[96], out[1024];
+        snprintf(base, sizeof base, "%s", mf.model_count > 1 ? m->name : base_name(path));
+        char *dot = strrchr(base, '.');
+        if (dot) *dot = 0;
+        snprintf(out, sizeof out, "%s/%s.obj", dir, base);
+        if (mkdirs(out) || nds_model_write_obj(m, ts, dir, base) != NDS_OK) { rc = 1; continue; }
+        if (preview) {
+            NdsImage img;
+            snprintf(out, sizeof out, "%s/%s.png", dir, base);
+            if (nds_model_render(m, ts, yaw, pitch, size, size, &img) == NDS_OK) {
+                char tmp[1024];
+                snprintf(tmp, sizeof tmp, "%s/%s_preview.png", dir, base);
+                if (nds_write_png(tmp, &img) != NDS_OK) rc = 1;
+                free(img.rgba);
+            }
+        }
+        printf("%s: %u triangles, %u materials\n", m->name, m->tri_count, m->material_count);
+    }
+    nds_texset_free(&ext);
+    nds_modelfile_free(&mf);
+    return rc;
+}
+
+static int cmd_render(const NdsRom *rom, const char *path, char *out_png, const char *texpath,
+                      float yaw, float pitch, uint32_t size) {
+    NdsModelFile mf;
+    NdsTexSet ext;
+    if (load_model(rom, path, texpath, &mf, &ext)) return 1;
+    const NdsTexSet *ts = mf.has_tex && !ext.tex_count ? &mf.tex : &ext;
+    int rc = 1;
+    if (mf.model_count) {
+        NdsImage img;
+        if (nds_model_render(&mf.models[0], ts, yaw, pitch, size, size, &img) == NDS_OK) {
+            rc = mkdirs(out_png) || nds_write_png(out_png, &img) != NDS_OK;
+            free(img.rgba);
+        }
+    }
+    nds_texset_free(&ext);
+    nds_modelfile_free(&mf);
+    return rc;
+}
+
+static int cmd_model_all(const NdsRom *rom, const char *dir) {
+    size_t ok = 0, bad = 0;
+    for (size_t i = 0; i < nds_file_count(rom); i++) {
+        const NdsFile *f = nds_file_at(rom, i);
+        const char *p = f->path, *dot = strrchr(p, '.');
+        if (!dot || strcmp(dot, ".nsbmd")) continue;
+        char out[1024];
+        snprintf(out, sizeof out, "%s/%s", dir, p);
+        char *sl = strrchr(out, '/');
+        *sl = 0;
+        if (model_export(rom, p, out, NULL, 1, 30, 25, 512)) bad++;
+        else ok++;
+    }
+    printf("Exported %zu models (%zu failed)\n", ok, bad);
+    return bad ? 1 : 0;
+}
+
 int main(int argc, char **argv) {
     if (argc < 2) { usage(argv[0]); return 2; }
     NdsResult r;
@@ -565,6 +696,21 @@ int main(int argc, char **argv) {
             if (n >= 0) printf("Wrote %d animations\n", n);
             rc = n < 0;
         }
+    }
+    else if (!strcmp(cmd, "tex") && argc > 4) rc = cmd_tex(rom, argv[3], argv[4]);
+    else if (!strcmp(cmd, "model-all") && argc > 3) rc = cmd_model_all(rom, argv[3]);
+    else if ((!strcmp(cmd, "model") || !strcmp(cmd, "render")) && argc > 4) {
+        const char *tex = NULL;
+        float yaw = 30, pitch = 25;
+        uint32_t size = 512;
+        for (int i = 5; i + 1 < argc; i += 2) {
+            if (!strcmp(argv[i], "--tex")) tex = argv[i + 1];
+            else if (!strcmp(argv[i], "--yaw")) yaw = (float)atof(argv[i + 1]);
+            else if (!strcmp(argv[i], "--pitch")) pitch = (float)atof(argv[i + 1]);
+            else if (!strcmp(argv[i], "--size")) size = (uint32_t)atoi(argv[i + 1]);
+        }
+        if (!strcmp(cmd, "model")) rc = model_export(rom, argv[3], argv[4], tex, 1, yaw, pitch, size);
+        else rc = cmd_render(rom, argv[3], argv[4], tex, yaw, pitch, size);
     }
     else if (!strcmp(cmd, "unpack") && argc > 4) rc = cmd_unpack(rom, argv[3], argv[4]);
     else if (!strcmp(cmd, "png") && argc > 4) {

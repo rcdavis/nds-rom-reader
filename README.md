@@ -28,6 +28,10 @@ A Nintendo DS ROM reader in C.
     build/ndsviewer game.nds text-all out_dir                    # every .sdb as .txt
     build/ndsviewer game.nds sdat dat/SND/sound_data.sdat        # list an SDAT
     build/ndsviewer game.nds audio dat/SND/sound_data.sdat out   # SSEQ/SBNK + WAVs
+    build/ndsviewer game.nds tex a/a.nsbtx out_dir               # textures as PNG
+    build/ndsviewer game.nds model a/a.nsbmd out_dir             # OBJ/MTL/PNG + preview
+    build/ndsviewer game.nds render a/a.nsbmd out.png --yaw 30 --pitch 25 --size 512
+    build/ndsviewer game.nds model-all out_dir                   # every NSBMD
 
 `png` finds a palette (and `png-all` a tile map) from same-named files in the
 same directory when not given. Sprites are tiles in object-memory order: pass
@@ -44,8 +48,15 @@ to MIDI.
 `text` decodes the 16-bit message banks (`.sdb`) using the English font order.
 Punctuation codes are partly inferred, unknown codes print as `<HEX>`, control
 codes as `{name}`. Japanese banks and the `stxt_*`/`DigZknHelp` banks use other
-layouts and are skipped or unreadable. 3D formats (NSBMD/NSBTX) aren't
-supported; the sample ROM has none.
+layouts and are skipped or unreadable.
+`model` / `render` read NSBMD models (display lists, node/matrix-stack render
+commands) and decode NSBTX textures (all seven formats, including 4x4
+compressed). Textures come from the model itself, `--tex <nsbtx>`, or the
+same-stem `.nsbtx`. `model` writes OBJ + MTL + PNGs and a `_preview.png`
+software render (orthographic, no lighting). Not supported: NSBCA/NSBTA/NSBVA
+animation, texture matrices and normals; skinned (NODEMIX) models are
+unverified. Golden Sun: Dark Dawn compresses most 3D files with a
+game-specific LZ variant (tag 0x40), which `unpack` and the viewer handle.
 
 ## Test
 
