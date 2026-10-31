@@ -91,6 +91,15 @@ void nds_modelfile_free(NdsModelFile *mf);
 NdsResult nds_model_write_obj(const NdsModel *m, const NdsTexSet *tex, const char *dir,
                               const char *base);
 
+/* Writes <dir>/<base>.gltf (glTF 2.0), <base>.bin and one PNG per texture used.
+   Returns NDS_ERR_NOTFOUND if the model has no triangles. */
+NdsResult nds_model_write_gltf(const NdsModel *m, const NdsTexSet *tex, const char *dir,
+                               const char *base);
+
+/* Writes a self-contained <dir>/<base>.glb with the textures embedded. */
+NdsResult nds_model_write_glb(const NdsModel *m, const NdsTexSet *tex, const char *dir,
+                              const char *base);
+
 /* Software preview (orthographic, nearest-neighbour textures, no lighting). */
 NdsResult nds_model_render(const NdsModel *m, const NdsTexSet *tex, float yaw_deg,
                            float pitch_deg, uint32_t width, uint32_t height, NdsImage *out);

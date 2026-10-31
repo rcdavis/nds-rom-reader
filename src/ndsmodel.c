@@ -570,7 +570,7 @@ NdsResult nds_model_write_obj(const NdsModel *m, const NdsTexSet *tex, const cha
                 started = 1;
             }
             uint32_t a = t * 3 + 1;
-            fprintf(obj, "f %u/%u %u/%u %u/%u\n", a, a, a + 1, a + 1, a + 2, a + 2);
+            fprintf(obj, "f %u/%u %u/%u %u/%u\n", a, a, a + 2, a + 2, a + 1, a + 1);
         }
     }
 

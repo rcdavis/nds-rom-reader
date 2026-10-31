@@ -27,7 +27,7 @@ static void usage(const char *p) {
             "  extract-all <dir>    extract every file, preserving directories\n"
             "  unpack <path> <out>  extract a file, decompressing it if needed\n"
             "  tex <path> <outdir>  export every texture of an NSBTX/NSBMD as PNG\n"
-            "  model <path> <outdir> [--tex <nsbtx>]  export an NSBMD as OBJ/MTL/PNG\n"
+            "  model <path> <outdir> [--tex <nsbtx>]  export an NSBMD as OBJ/MTL and a self-contained GLB (+PNG)\n"
             "  render <path> <out.png> [--tex <nsbtx>] [--yaw N] [--pitch N] [--size N]\n"
             "                       software preview of an NSBMD\n"
             "  model-all <outdir>   export and preview every NSBMD\n"
@@ -602,6 +602,7 @@ static int model_export(const NdsRom *rom, const char *path, const char *dir, co
         if (dot) *dot = 0;
         snprintf(out, sizeof out, "%s/%s.obj", dir, base);
         if (mkdirs(out) || nds_model_write_obj(m, ts, dir, base) != NDS_OK) { rc = 1; continue; }
+        if (m->tri_count && nds_model_write_glb(m, ts, dir, base) != NDS_OK) rc = 1;
         if (preview) {
             NdsImage img;
             snprintf(out, sizeof out, "%s/%s.png", dir, base);
