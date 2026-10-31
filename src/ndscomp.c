@@ -141,6 +141,15 @@ NdsResult nds_load_file_unpacked(const NdsRom *rom, const NdsFile *file,
     uint32_t usz;
     if (nds_is_compressed(raw, rsz) && nds_decompress(raw, rsz, &un, &usz) == NDS_OK) {
         free(raw);
+        /* Some Golden Sun files are LZ40-compressed twice. */
+        for (int depth = 0; depth < 4 && usz && un[0] == 0x40 && nds_is_compressed(un, usz); depth++) {
+            uint8_t *in2;
+            uint32_t isz;
+            if (nds_decompress(un, usz, &in2, &isz) != NDS_OK) break;
+            free(un);
+            un = in2;
+            usz = isz;
+        }
         *data = un;
         *size = usz;
         if (was_compressed) *was_compressed = 1;

@@ -37,6 +37,13 @@ typedef struct {
     char name[256][17];
 } NdsDict;
 
+/* Pivot rotation: select 0-8, neg bits, a and b = the two stored values.
+   out is column-major (out[3*c + i]). */
+void nds_pivot_mat(unsigned sel, unsigned neg, double a, double b, double out[9]);
+
+/* Inverts a 3x4 row-major affine matrix; returns -1 if it is singular. */
+int nds_affine_inverse(const double m[12], double out[12]);
+
 size_t nds_nitro_block(Buf *b, const char *magic);
 int nds_dict_read(Buf *b, size_t base, NdsDict *d);
 

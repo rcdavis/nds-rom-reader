@@ -3,6 +3,9 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <math.h>
+
+#include "../src/ndsbuf.h"
 
 static int failures;
 #define CHECK(c) do { if (!(c)) { printf("FAIL line %d: %s\n", __LINE__, #c); failures++; } } while (0)
@@ -85,7 +88,35 @@ static void test_texture(void) {
     }
 }
 
+static void test_pivot_and_inverse(void) {
+    for (unsigned sel = 0; sel < 9; sel++)
+        for (unsigned neg = 0; neg < 8; neg++) {
+            double m[9];
+            if (!(((neg >> 1) ^ (neg >> 2)) & 1)) continue; /* only these sign pairs form a rotation */
+            nds_pivot_mat(sel, neg, 0.6, 0.8, m);
+            for (int p = 0; p < 3; p++)
+                for (int q = 0; q < 3; q++) {
+                    double dot = 0;
+                    for (int r = 0; r < 3; r++) dot += m[3 * p + r] * m[3 * q + r];
+                    CHECK(fabs(dot - (p == q)) < 1e-9);
+                }
+        }
+    const double a[12] = {0, -2, 0, 5, 3, 0, 0, -1, 0, 0, 4, 7}, ident[12] = {1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0};
+    double inv[12];
+    CHECK(nds_affine_inverse(a, inv) == 0);
+    for (int i = 0; i < 3; i++)
+        for (int j = 0; j < 4; j++) {
+            double t = 0;
+            for (int k = 0; k < 3; k++) t += a[i * 4 + k] * inv[k * 4 + j];
+            if (j == 3) t += a[i * 4 + 3];
+            CHECK(fabs(t - ident[i * 4 + j]) < 1e-9);
+        }
+    const double sing[12] = {0};
+    CHECK(nds_affine_inverse(sing, inv) != 0);
+}
+
 int main(void) {
+    test_pivot_and_inverse();
     test_lz40();
     test_texture();
     puts(failures ? "FAILED" : "all tests passed");

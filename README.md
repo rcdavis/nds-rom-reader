@@ -29,7 +29,7 @@ A Nintendo DS ROM reader in C.
     build/ndsviewer game.nds sdat dat/SND/sound_data.sdat        # list an SDAT
     build/ndsviewer game.nds audio dat/SND/sound_data.sdat out   # SSEQ/SBNK + WAVs
     build/ndsviewer game.nds tex a/a.nsbtx out_dir               # textures as PNG
-    build/ndsviewer game.nds model a/a.nsbmd out_dir             # OBJ + GLB + PNG + preview
+    build/ndsviewer game.nds model a/a.nsbmd out_dir             # OBJ + GLB (+ animations) + PNG + preview
     build/ndsviewer game.nds render a/a.nsbmd out.png --yaw 30 --pitch 25 --size 512
     build/ndsviewer game.nds model-all out_dir                   # every NSBMD
 
@@ -53,9 +53,13 @@ layouts and are skipped or unreadable.
 commands) and decode NSBTX textures (all seven formats, including 4x4
 compressed). Textures come from the model itself, `--tex <nsbtx>`, or the
 same-stem `.nsbtx`. `model` writes OBJ + MTL, a self-contained GLB (glTF 2.0 binary, textures embedded) and PNGs, plus a `_preview.png`
-software render (orthographic, no lighting). Not supported: NSBCA/NSBTA/NSBVA
-animation, texture matrices and normals; skinned (NODEMIX) models are
-unverified. Golden Sun: Dark Dawn compresses most 3D files with a
+software render (orthographic, no lighting).
+Joint animation (NSBCA) is read from the same-stem `.nsbca` or `--anim <nsbca>`
+and written into the GLB as a node hierarchy with one glTF animation per clip
+(30 fps, sampled per frame); clips are matched to models by name.
+`render ... --anim-index N --frame F` poses the model for a still.
+Not supported: NSBTA/NSBVA (texture/visibility) animation, texture matrices and
+normals; skinned (NODEMIX) triangles stay static. Golden Sun: Dark Dawn compresses most 3D files with a
 game-specific LZ variant (tag 0x40), which `unpack` and the viewer handle.
 
 ## Test

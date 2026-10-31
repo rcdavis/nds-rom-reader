@@ -45,61 +45,70 @@ typedef struct {
     Buf *b;
     NdsModel *model;
     double pos_scale, inv_scale;
-    Mat *nodes;           /* local node transforms */
+    NdsNode *nodes;       /* node transforms; filled in as the render commands run */
     uint32_t node_count;
+    int stack_node[STACK_SIZE]; /* which node each stack matrix belongs to, or -1 */
+    int cur_node;
     Shape *shapes;
     uint32_t shape_count;
     Mat stack[STACK_SIZE];
     size_t inv_bind;      /* offset of the inverse bind matrices, 0 if absent */
     uint32_t tri_cap;
     uint32_t cur_material;
-    NdsTexInfo unused;
 } Ctx;
 
-static Mat read_node(Buf *b, size_t o) {
-    uint32_t flags = rd16(b, o);
-    double m00 = rds16(b, o + 2) / 4096.0;
-    o += 4;
-    double t[3] = {0, 0, 0}, s[3] = {1, 1, 1}, raw[9] = {1, 0, 0, 0, 1, 0, 0, 0, 1};
+void nds_pivot_mat(unsigned sel, unsigned neg, double a, double b, double out[9]) {
+    memset(out, 0, 9 * sizeof out[0]);
+    if (sel >= 9) {
+        out[0] = -a;
+        return;
+    }
+    double o = (neg & 1) ? -1 : 1, c = (neg & 2) ? -b : b, d = (neg & 4) ? -a : a;
+    static const int T[9][9] = {
+        /* each row lists, for the 9 column-major cells, which symbol goes there:
+           0 zero, 1 o, 2 a, 3 b, 4 c, 5 d */
+        {1, 0, 0, 0, 2, 3, 0, 4, 5}, {0, 1, 0, 2, 0, 3, 4, 0, 5}, {0, 0, 1, 2, 3, 0, 4, 5, 0},
+        {0, 2, 3, 1, 0, 0, 0, 4, 5}, {2, 0, 3, 0, 1, 0, 4, 0, 5}, {2, 3, 0, 0, 0, 1, 4, 5, 0},
+        {0, 2, 3, 0, 4, 5, 1, 0, 0}, {2, 0, 3, 4, 0, 5, 0, 1, 0}, {2, 3, 0, 4, 5, 0, 0, 0, 1},
+    };
+    const double sym[6] = {0, o, a, b, c, d};
+    for (int i = 0; i < 9; i++) out[i] = sym[T[sel][i]];
+}
 
-    if (!(flags & 1)) {
-        for (int i = 0; i < 3; i++) t[i] = rds32(b, o + i * 4) / 4096.0;
-        o += 12;
-    }
-    if (!(flags & 2)) {
-        if (flags & 8) {
-            double A = rds16(b, o) / 4096.0, B = rds16(b, o + 2) / 4096.0;
-            o += 4;
-            int p = (flags >> 4) & 15;
-            if (p > 8) p = 0;
-            int pr = p / 3, pc = p % 3, r0 = -1, r1 = -1, c0 = -1, c1 = -1;
-            for (int i = 0; i < 3; i++) {
-                if (i != pr) { if (r0 < 0) r0 = i; else r1 = i; }
-                if (i != pc) { if (c0 < 0) c0 = i; else c1 = i; }
-            }
-            memset(raw, 0, sizeof raw);
-            raw[p] = (flags & 0x100) ? -1 : 1;
-            raw[3 * r0 + c0] = A;
-            raw[3 * r0 + c1] = B;
-            raw[3 * r1 + c0] = (flags & 0x200) ? -B : B;
-            raw[3 * r1 + c1] = (flags & 0x400) ? -A : A;
-        } else {
-            raw[0] = m00;
-            for (int i = 1; i < 9; i++) raw[i] = rds16(b, o + (i - 1) * 2) / 4096.0;
-            o += 16;
-        }
-    }
-    if (!(flags & 4)) {
-        for (int i = 0; i < 3; i++) s[i] = rds32(b, o + i * 4) / 4096.0;
-    }
-
-    /* raw[3*c + i] is element i of the image of axis c. */
+static Mat node_matrix(const NdsNode *n) {
     Mat m;
     for (int i = 0; i < 3; i++) {
-        for (int c = 0; c < 3; c++) m.a[i][c] = raw[3 * c + i] * s[c];
-        m.a[i][3] = t[i];
+        for (int c = 0; c < 3; c++) m.a[i][c] = n->rot[3 * c + i] * n->scale[c];
+        m.a[i][3] = n->trans[i];
     }
     return m;
+}
+
+static void read_node(Buf *b, size_t o, NdsNode *n) {
+    uint32_t flags = rd16(b, o);
+    int16_t m00 = (int16_t)rd16(b, o + 2);
+    o += 4;
+    static const double ident[9] = {1, 0, 0, 0, 1, 0, 0, 0, 1};
+    memcpy(n->rot, ident, sizeof ident);
+    n->scale[0] = n->scale[1] = n->scale[2] = 1;
+    n->trans[0] = n->trans[1] = n->trans[2] = 0;
+
+    if (!(flags & 1)) {
+        for (int i = 0; i < 3; i++) n->trans[i] = rds32(b, o + i * 4) / 4096.0;
+        o += 12;
+    }
+    if (flags & 8) {
+        double a = rds16(b, o) / 4096.0, bb = rds16(b, o + 2) / 4096.0;
+        o += 4;
+        nds_pivot_mat((flags >> 4) & 15, (flags >> 8) & 15, a, bb, n->rot);
+    } else if (!(flags & 2)) {
+        n->rot[0] = m00 / 4096.0;
+        for (int i = 1; i < 9; i++) n->rot[i] = rds16(b, o + (i - 1) * 2) / 4096.0;
+        o += 16;
+    }
+    if (!(flags & 4)) {
+        for (int i = 0; i < 3; i++) n->scale[i] = rds32(b, o + i * 4) / 4096.0;
+    }
 }
 
 /* ---- Materials ---- */
@@ -183,12 +192,16 @@ static int add_tri(Ctx *c, const NdsVertex *a, const NdsVertex *b2, const NdsVer
         uint16_t *nm = realloc(m->tri_material, (size_t)cap * sizeof *nm);
         if (!nm) return -1;
         m->tri_material = nm;
+        int16_t *nn = realloc(m->tri_node, (size_t)cap * sizeof *nn);
+        if (!nn) return -1;
+        m->tri_node = nn;
         c->tri_cap = cap;
     }
     NdsVertex *dst = m->verts + (size_t)m->tri_count * 3;
     dst[0] = *a;
     dst[1] = *b2;
     dst[2] = *c2;
+    m->tri_node[m->tri_count] = (int16_t)c->cur_node;
     m->tri_material[m->tri_count++] = (uint16_t)c->cur_material;
     return 0;
 }
@@ -330,7 +343,11 @@ static int run_sbc(Ctx *c, size_t pc, size_t limit) {
     Buf *b = c->b;
     Mat cur = mat_identity();
     int visible = 1;
-    for (int i = 0; i < STACK_SIZE; i++) c->stack[i] = mat_identity();
+    for (int i = 0; i < STACK_SIZE; i++) {
+        c->stack[i] = mat_identity();
+        c->stack_node[i] = -1;
+    }
+    c->cur_node = -1;
 
     for (int steps = 0; steps < 100000 && pc < limit && !b->bad; steps++) {
         unsigned op = rd8(b, pc++), cmd = op & 0x1F;
@@ -343,6 +360,7 @@ static int run_sbc(Ctx *c, size_t pc, size_t limit) {
             break;
         case 0x03:
             cur = c->stack[rd8(b, pc) & 31];
+            c->cur_node = c->stack_node[rd8(b, pc) & 31];
             pc += 1;
             break;
         case 0x04:
@@ -355,15 +373,30 @@ static int run_sbc(Ctx *c, size_t pc, size_t limit) {
             break;
         }
         case 0x06: {
-            uint32_t node = rd8(b, pc), parent = rd8(b, pc + 1);
-            (void)parent;
+            uint32_t node = rd8(b, pc);
             pc += 3;
             int store = -1, restore = -1;
             if (op & 0x20) store = rd8(b, pc++) & 31;
             if (op & 0x40) restore = rd8(b, pc++) & 31;
-            if (restore >= 0) cur = c->stack[restore];
-            if (node < c->node_count) cur = mat_mul(&cur, &c->nodes[node]);
-            if (store >= 0) c->stack[store] = cur;
+            if (restore >= 0) {
+                cur = c->stack[restore];
+                c->cur_node = c->stack_node[restore];
+            }
+            if (node < c->node_count) {
+                NdsNode *nd = &c->nodes[node];
+                Mat local = node_matrix(nd);
+                if (!nd->placed) nd->parent = c->cur_node;
+                cur = mat_mul(&cur, &local);
+                if (!nd->placed)
+                    for (int r = 0; r < 3; r++)
+                        for (int k = 0; k < 4; k++) nd->world[r * 4 + k] = cur.a[r][k];
+                nd->placed = 1;
+                c->cur_node = (int)node;
+            } else c->cur_node = -1;
+            if (store >= 0) {
+                c->stack[store] = cur;
+                c->stack_node[store] = c->cur_node;
+            }
             break;
         }
         case 0x07: case 0x08: pc += 1; break;
@@ -386,6 +419,7 @@ static int run_sbc(Ctx *c, size_t pc, size_t limit) {
                     for (int col = 0; col < 4; col++) acc.a[r][col] += w * prod.a[r][col];
             }
             c->stack[dst] = acc;
+            c->stack_node[dst] = -1;
             break;
         }
         case 0x0A: pc += 8; break;
@@ -409,6 +443,8 @@ static void free_model(NdsModel *m) {
     free(m->materials);
     free(m->verts);
     free(m->tri_material);
+    free(m->tri_node);
+    free(m->nodes);
     memset(m, 0, sizeof *m);
 }
 
@@ -431,7 +467,7 @@ static NdsResult parse_model(Buf *b, size_t mo, const char *name, NdsModel *out)
     NdsDict nodes, shapes;
     if (nds_dict_read(b, mo + 0x40, &nodes) || nds_dict_read(b, polys, &shapes)) return NDS_ERR_FORMAT;
 
-    c.nodes = malloc((nodes.n ? nodes.n : 1) * sizeof *c.nodes);
+    c.nodes = calloc(nodes.n ? nodes.n : 1, sizeof *c.nodes);
     c.shapes = malloc((shapes.n ? shapes.n : 1) * sizeof *c.shapes);
     if (!c.nodes || !c.shapes) {
         free(c.nodes);
@@ -440,7 +476,11 @@ static NdsResult parse_model(Buf *b, size_t mo, const char *name, NdsModel *out)
     }
     c.node_count = nodes.n;
     c.shape_count = shapes.n;
-    for (uint32_t i = 0; i < nodes.n; i++) c.nodes[i] = read_node(b, mo + 0x40 + rd32(b, nodes.ent[i]));
+    for (uint32_t i = 0; i < nodes.n; i++) {
+        memcpy(c.nodes[i].name, nodes.name[i], 17);
+        c.nodes[i].parent = -1;
+        read_node(b, mo + 0x40 + rd32(b, nodes.ent[i]), &c.nodes[i]);
+    }
     for (uint32_t i = 0; i < shapes.n; i++) {
         size_t so = polys + rd32(b, shapes.ent[i]);
         c.shapes[i].dl = so + rd32(b, so + 8);
@@ -453,9 +493,20 @@ static NdsResult parse_model(Buf *b, size_t mo, const char *name, NdsModel *out)
     else if (run_sbc(&c, sbc, b->n)) r = NDS_ERR_NOMEM;
     if (b->bad && r == NDS_OK) r = NDS_ERR_FORMAT;
 
-    free(c.nodes);
     free(c.shapes);
-    if (r != NDS_OK) return r;
+    if (r != NDS_OK) {
+        free(c.nodes);
+        return r;
+    }
+    out->nodes = c.nodes;
+    out->node_count = c.node_count;
+    for (uint32_t i = 0; i < out->node_count; i++) {
+        NdsNode *nd = &out->nodes[i];
+        if (nd->placed) continue;
+        Mat local = node_matrix(nd);
+        for (int r = 0; r < 3; r++)
+            for (int k = 0; k < 4; k++) nd->world[r * 4 + k] = local.a[r][k];
+    }
 
     for (int k = 0; k < 3; k++) out->bmin[k] = out->bmax[k] = 0;
     for (uint32_t i = 0; i < out->tri_count * 3; i++)

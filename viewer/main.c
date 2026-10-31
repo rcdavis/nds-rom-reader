@@ -541,6 +541,33 @@ static char *sibling_tex(const char *path) {
     return t;
 }
 
+static const char *g_anim_path;   /* --anim override */
+static int g_anim_index;          /* render --anim-index */
+static double g_anim_frame;       /* render --frame */
+
+/* Loads the --anim file or the same-stem .nsbca; leaves *set empty when none exists. */
+static void load_anims(const NdsRom *rom, const char *path, NdsJointAnimSet *set) {
+    memset(set, 0, sizeof *set);
+    char *t = NULL;
+    const char *ap = g_anim_path;
+    if (!ap) {
+        t = malloc(strlen(path) + 8);
+        if (!t) return;
+        strcpy(t, path);
+        char *dot = strrchr(t, '.');
+        if (!dot || dot < strrchr(t, '/')) { free(t); return; }
+        strcpy(dot, ".nsbca");
+        ap = t;
+    }
+    uint8_t *d;
+    uint32_t n;
+    if (nds_find_file(rom, ap) && load_unpacked(rom, ap, &d, &n) == NDS_OK) {
+        if (nds_jntanim_parse(d, n, set) != NDS_OK) memset(set, 0, sizeof *set);
+        free(d);
+    } else if (g_anim_path) fprintf(stderr, "%s: cannot load animation\n", ap);
+    free(t);
+}
+
 static const char *base_name(const char *p) {
     const char *s = strrchr(p, '/');
     return s ? s + 1 : p;
@@ -587,6 +614,17 @@ static int cmd_tex(const NdsRom *rom, const char *path, const char *dir) {
     return rc;
 }
 
+/* An animation set may hold clips for several models; keep the ones named after `m`. */
+static const NdsJointAnimSet *pick_anims(const NdsModel *m, const NdsJointAnimSet *all, NdsJointAnimSet *mine) {
+    if (!all->count) return NULL;
+    if (all->count == 1 || !m->name[0]) return all;
+    uint32_t k = 0;
+    for (uint32_t i = 0; i < all->count; i++)
+        if (!strcmp(all->anims[i].name, m->name)) { mine->anims = &all->anims[i]; k++; break; }
+    mine->count = k;
+    return k ? mine : NULL;
+}
+
 static int model_export(const NdsRom *rom, const char *path, const char *dir, const char *texpath,
                         int preview, float yaw, float pitch, uint32_t size) {
     NdsModelFile mf;
@@ -594,15 +632,18 @@ static int model_export(const NdsRom *rom, const char *path, const char *dir, co
     if (load_model(rom, path, texpath, &mf, &ext)) return 1;
     const NdsTexSet *ts = mf.has_tex && !ext.tex_count ? &mf.tex : &ext;
     int rc = 0;
+    NdsJointAnimSet anims;
+    load_anims(rom, path, &anims);
     for (uint32_t i = 0; i < mf.model_count; i++) {
         const NdsModel *m = &mf.models[i];
         char base[96], out[1024];
+        NdsJointAnimSet mine;
         snprintf(base, sizeof base, "%s", mf.model_count > 1 ? m->name : base_name(path));
         char *dot = strrchr(base, '.');
         if (dot) *dot = 0;
         snprintf(out, sizeof out, "%s/%s.obj", dir, base);
         if (mkdirs(out) || nds_model_write_obj(m, ts, dir, base) != NDS_OK) { rc = 1; continue; }
-        if (m->tri_count && nds_model_write_glb(m, ts, dir, base) != NDS_OK) rc = 1;
+        if (m->tri_count) { NdsResult gr = nds_model_write_glb(m, ts, pick_anims(m, &anims, &mine), dir, base); if (gr != NDS_OK) { fprintf(stderr, "%s: glb: %s\n", base, nds_strerror(gr)); rc = 1; } }
         if (preview) {
             NdsImage img;
             snprintf(out, sizeof out, "%s/%s.png", dir, base);
@@ -615,6 +656,7 @@ static int model_export(const NdsRom *rom, const char *path, const char *dir, co
         }
         printf("%s: %u triangles, %u materials\n", m->name, m->tri_count, m->material_count);
     }
+    nds_jntanim_free(&anims);
     nds_texset_free(&ext);
     nds_modelfile_free(&mf);
     return rc;
@@ -629,10 +671,21 @@ static int cmd_render(const NdsRom *rom, const char *path, char *out_png, const 
     int rc = 1;
     if (mf.model_count) {
         NdsImage img;
-        if (nds_model_render(&mf.models[0], ts, yaw, pitch, size, size, &img) == NDS_OK) {
+        NdsModel pm = mf.models[0];
+        NdsVertex *pv = NULL;
+        NdsJointAnimSet anims;
+        load_anims(rom, path, &anims);
+        if (g_anim_path || g_anim_frame > 0 || g_anim_index > 0) {
+            if (g_anim_index >= 0 && (uint32_t)g_anim_index < anims.count && pm.tri_count)
+                pv = malloc((size_t)pm.tri_count * 3 * sizeof *pv);
+            if (pv && nds_model_pose(&pm, &anims.anims[g_anim_index], g_anim_frame, pv) == NDS_OK) pm.verts = pv;
+        }
+        if (nds_model_render(&pm, ts, yaw, pitch, size, size, &img) == NDS_OK) {
             rc = mkdirs(out_png) || nds_write_png(out_png, &img) != NDS_OK;
             free(img.rgba);
         }
+        free(pv);
+        nds_jntanim_free(&anims);
     }
     nds_texset_free(&ext);
     nds_modelfile_free(&mf);
@@ -706,6 +759,9 @@ int main(int argc, char **argv) {
         uint32_t size = 512;
         for (int i = 5; i + 1 < argc; i += 2) {
             if (!strcmp(argv[i], "--tex")) tex = argv[i + 1];
+            else if (!strcmp(argv[i], "--anim")) g_anim_path = argv[i + 1];
+            else if (!strcmp(argv[i], "--anim-index")) g_anim_index = atoi(argv[i + 1]);
+            else if (!strcmp(argv[i], "--frame")) g_anim_frame = atof(argv[i + 1]);
             else if (!strcmp(argv[i], "--yaw")) yaw = (float)atof(argv[i + 1]);
             else if (!strcmp(argv[i], "--pitch")) pitch = (float)atof(argv[i + 1]);
             else if (!strcmp(argv[i], "--size")) size = (uint32_t)atoi(argv[i + 1]);

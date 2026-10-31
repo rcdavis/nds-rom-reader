@@ -67,8 +67,21 @@ typedef struct {
     uint32_t width, height; /* of the texture, in pixels */
 } NdsMaterial;
 
+/* A node of the model skeleton. Local transform = T * R * S, where R is a
+   3x3 matrix stored column by column (rot[3*c + i] is element i of column c). */
 typedef struct {
     char name[17];
+    int parent;                /* -1 for a root */
+    double trans[3], rot[9], scale[3];
+    double world[12];          /* rest-pose local-to-world, 3x4 row-major */
+    int placed;                /* set once the render commands have positioned it */
+} NdsNode;
+
+typedef struct {
+    char name[17];
+    NdsNode *nodes;
+    uint32_t node_count;
+    int16_t *tri_node;         /* per triangle: owning node, or -1 for none (static) */
     NdsMaterial *materials;
     uint32_t material_count;
     uint32_t tri_count;
@@ -91,14 +104,52 @@ void nds_modelfile_free(NdsModelFile *mf);
 NdsResult nds_model_write_obj(const NdsModel *m, const NdsTexSet *tex, const char *dir,
                               const char *base);
 
-/* Writes <dir>/<base>.gltf (glTF 2.0), <base>.bin and one PNG per texture used.
+/* ---- Joint animations (NSBCA) ---- */
+
+typedef struct {
+    int kind;                  /* 0 none (use the model's rest value), 1 constant, 2 sampled */
+    uint32_t start, end, step; /* sampled: frame range, frames per sample */
+    uint32_t count;
+    double *v;                 /* count * dim values */
+} NdsCurve;
+
+typedef struct {
+    uint32_t node;             /* model node this animates */
+    NdsCurve trans[3], rot, scale[3];
+} NdsJointCurves;
+
+typedef struct {
+    char name[17];
+    uint32_t num_frames;
+    NdsJointCurves *objs;
+    uint32_t obj_count;
+} NdsJointAnim;
+
+typedef struct {
+    NdsJointAnim *anims;
+    uint32_t count;
+} NdsJointAnimSet;
+
+NdsResult nds_jntanim_parse(const uint8_t *data, size_t size, NdsJointAnimSet *out);
+void nds_jntanim_free(NdsJointAnimSet *set);
+
+/* Local TRS of every model node at `frame` (fractional frames interpolate). Nodes
+   the animation doesn't drive keep their rest transform. Arrays are node_count
+   long: t[3*n], r[9*n], s[3*n]. */
+NdsResult nds_jntanim_eval(const NdsModel *m, const NdsJointAnim *a, double frame, double *t,
+                           double *r, double *s);
+
+/* Re-poses the model: writes tri_count*3 world-space vertices into out. */
+NdsResult nds_model_pose(const NdsModel *m, const NdsJointAnim *a, double frame, NdsVertex *out);
+
+/* anims may be NULL. Writes <dir>/<base>.gltf (glTF 2.0), <base>.bin and one PNG per texture used.
    Returns NDS_ERR_NOTFOUND if the model has no triangles. */
-NdsResult nds_model_write_gltf(const NdsModel *m, const NdsTexSet *tex, const char *dir,
-                               const char *base);
+NdsResult nds_model_write_gltf(const NdsModel *m, const NdsTexSet *tex, const NdsJointAnimSet *anims,
+                               const char *dir, const char *base);
 
 /* Writes a self-contained <dir>/<base>.glb with the textures embedded. */
-NdsResult nds_model_write_glb(const NdsModel *m, const NdsTexSet *tex, const char *dir,
-                              const char *base);
+NdsResult nds_model_write_glb(const NdsModel *m, const NdsTexSet *tex, const NdsJointAnimSet *anims,
+                              const char *dir, const char *base);
 
 /* Software preview (orthographic, nearest-neighbour textures, no lighting). */
 NdsResult nds_model_render(const NdsModel *m, const NdsTexSet *tex, float yaw_deg,
