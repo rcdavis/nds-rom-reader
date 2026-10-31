@@ -24,13 +24,28 @@ A Nintendo DS ROM reader in C.
     build/ndsviewer game.nds png-all out_dir                     # render every graphic
     build/ndsviewer game.nds anim dat/BTCHR/228.c out/dragon     # animated GIFs
     build/ndsviewer game.nds anim-all out_dir                    # every sprite's animations
+    build/ndsviewer game.nds text dat/msg_new/bathelp.sdb        # print a message bank
+    build/ndsviewer game.nds text-all out_dir                    # every .sdb as .txt
+    build/ndsviewer game.nds sdat dat/SND/sound_data.sdat        # list an SDAT
+    build/ndsviewer game.nds audio dat/SND/sound_data.sdat out   # SSEQ/SBNK + WAVs
 
 `png` finds a palette (and `png-all` a tile map) from same-named files in the
 same directory when not given. Sprites are tiles in object-memory order: pass
 `--cer <NCER>` to `png` (or let `png-all` write `*_cells.png`) to assemble them
 into their frames. `anim` / `anim-all` combine the cells with NANR animation
 data and write one animated GIF per sequence (`<prefix>_<n>.gif`). Rotation and
-scaling in animations and 3D formats aren't supported yet.
+scaling in animations aren't supported.
+
+`audio` writes each SDAT sequence, bank and archive under its symbol name, and
+decodes every wave in the wave archives (PCM8, PCM16, IMA-ADPCM) and every
+stream to WAV, with loop points in a `smpl` chunk. Sequences are not converted
+to MIDI.
+
+`text` decodes the 16-bit message banks (`.sdb`) using the English font order.
+Punctuation codes are partly inferred, unknown codes print as `<HEX>`, control
+codes as `{name}`. Japanese banks and the `stxt_*`/`DigZknHelp` banks use other
+layouts and are skipped or unreadable. 3D formats (NSBMD/NSBTX) aren't
+supported; the sample ROM has none.
 
 ## Test
 

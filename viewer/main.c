@@ -1,4 +1,6 @@
 #include "ndsrom/ndsgfx.h"
+#include "ndsrom/ndssdat.h"
+#include "ndsrom/ndstext.h"
 
 #include <errno.h>
 #include <stdio.h>
@@ -32,7 +34,12 @@ static void usage(const char *p) {
             "                       write each NANR sequence of a sprite as <prefix>_<n>.gif;\n"
             "                       palette, cells and animations are found from same-named\n"
             "                       files if omitted\n"
-            "  anim-all <dir>       write animations for every sprite in the ROM\n",
+            "  anim-all <dir>       write animations for every sprite in the ROM\n"
+            "  text <path>          print the messages in an .sdb message bank\n"
+            "  text-all <dir>       write every .sdb message bank to <dir>/<path>.txt\n"
+            "  sdat <path>          list the contents of an SDAT sound archive\n"
+            "  audio <path> <dir>   extract an SDAT: sequences/banks as files, waves and\n"
+            "                       streams as .wav\n",
             p);
 }
 
@@ -375,6 +382,148 @@ static int cmd_anim_all(const NdsRom *rom, const char *dir) {
     return failed ? 1 : 0;
 }
 
+static NdsResult load_msgs(const NdsRom *rom, const char *path, NdsMsgTable *t) {
+    uint8_t *d;
+    uint32_t n;
+    NdsResult r = load_unpacked(rom, path, &d, &n);
+    if (r == NDS_OK) {
+        r = nds_msgtable_parse(d, n, t);
+        free(d);
+        if (r == NDS_OK) return r;
+    }
+    /* A table whose first offset looks like a compression header is stored raw. */
+    const NdsFile *f = nds_find_file(rom, path);
+    if (!f) return NDS_ERR_NOTFOUND;
+    r = nds_load_file(rom, f, &d, &n);
+    if (r != NDS_OK) return r;
+    r = nds_msgtable_parse(d, n, t);
+    free(d);
+    return r;
+}
+
+static void print_msgs(FILE *o, const NdsMsgTable *t) {
+    for (uint32_t i = 0; i < t->count; i++) {
+        char *s = nds_msg_decode(t->codes[i], t->len[i]);
+        if (!s) continue;
+        fprintf(o, "[%u]\n%s\n\n", i, s);
+        free(s);
+    }
+}
+
+static int cmd_text(const NdsRom *rom, const char *path) {
+    NdsMsgTable t;
+    NdsResult r = load_msgs(rom, path, &t);
+    if (r != NDS_OK) { fprintf(stderr, "%s: %s\n", path, nds_strerror(r)); return 1; }
+    print_msgs(stdout, &t);
+    nds_msgtable_free(&t);
+    return 0;
+}
+
+static int cmd_text_all(const NdsRom *rom, const char *dir) {
+    size_t done = 0, skipped = 0;
+    for (size_t i = 0; i < nds_file_count(rom); i++) {
+        const NdsFile *f = nds_file_at(rom, i);
+        size_t pl = strlen(f->path);
+        if (pl < 4 || strcmp(f->path + pl - 4, ".sdb") != 0) continue;
+        NdsMsgTable t;
+        if (load_msgs(rom, f->path, &t) != NDS_OK) { skipped++; continue; }
+        char *out = malloc(strlen(dir) + pl + 8);
+        if (!out) { nds_msgtable_free(&t); break; }
+        sprintf(out, "%s/%s.txt", dir, f->path);
+        FILE *o = mkdirs(out) == 0 ? fopen(out, "w") : NULL;
+        if (o) {
+            print_msgs(o, &t);
+            fclose(o);
+            done++;
+        } else skipped++;
+        free(out);
+        nds_msgtable_free(&t);
+    }
+    printf("Wrote %zu message banks to %s (%zu skipped)\n", done, dir, skipped);
+    return 0;
+}
+
+static NdsSdat *open_sdat(const NdsRom *rom, const char *path, uint8_t **buf) {
+    uint32_t n;
+    *buf = NULL;
+    NdsResult r = load_unpacked(rom, path, buf, &n);
+    NdsSdat *s = NULL;
+    if (r == NDS_OK) r = nds_sdat_open(*buf, n, &s);
+    if (r != NDS_OK) {
+        fprintf(stderr, "%s: %s\n", path, nds_strerror(r));
+        free(*buf);
+        *buf = NULL;
+    }
+    return s;
+}
+
+static int cmd_sdat(const NdsRom *rom, const char *path) {
+    uint8_t *buf;
+    NdsSdat *s = open_sdat(rom, path, &buf);
+    if (!s) return 1;
+    for (size_t i = 0; i < nds_sdat_count(s); i++) {
+        const NdsSdatEntry *e = nds_sdat_at(s, i);
+        printf("%-8s %5u  file %5u  %8u  %s\n", nds_sdat_type_name(e->type), e->index,
+               e->file_id, e->size, e->name);
+    }
+    nds_sdat_close(s);
+    free(buf);
+    return 0;
+}
+
+static void safe_name(char *s) {
+    for (; *s; s++)
+        if (!((*s >= '0' && *s <= '9') || (*s >= 'a' && *s <= 'z') || (*s >= 'A' && *s <= 'Z') ||
+              *s == '_' || *s == '-' || *s == '.'))
+            *s = '_';
+}
+
+static int cmd_audio(const NdsRom *rom, const char *path, const char *dir) {
+    uint8_t *buf;
+    NdsSdat *s = open_sdat(rom, path, &buf);
+    if (!s) return 1;
+    size_t files = 0, waves = 0, failed = 0;
+
+    for (size_t i = 0; i < nds_sdat_count(s); i++) {
+        const NdsSdatEntry *e = nds_sdat_at(s, i);
+        char *name = strdup(e->name);
+        char *out = malloc(strlen(dir) + strlen(e->name) * 2 + 64);
+        if (!name || !out) { free(name); free(out); break; }
+        safe_name(name);
+
+        sprintf(out, "%s/%s/%s.%s", dir, nds_sdat_type_name(e->type), name, nds_sdat_type_ext(e->type));
+        if (mkdirs(out) == 0 && write_file(out, e->data, e->size) == 0) files++;
+        else failed++;
+
+        if (e->type == NDS_SDAT_STRM) {
+            NdsAudio a;
+            sprintf(out, "%s/WAV/%s.wav", dir, name);
+            if (nds_strm_decode(e->data, e->size, &a) == NDS_OK) {
+                if (mkdirs(out) == 0 && nds_write_wav(out, &a) == NDS_OK) waves++;
+                else failed++;
+                nds_audio_free(&a);
+            } else failed++;
+        } else if (e->type == NDS_SDAT_WAVEARC) {
+            uint32_t count = 0;
+            if (nds_swar_count(e->data, e->size, &count) != NDS_OK) { failed++; count = 0; }
+            for (uint32_t w = 0; w < count; w++) {
+                NdsAudio a;
+                sprintf(out, "%s/WAV/%s/%04u.wav", dir, name, w);
+                if (nds_swar_decode(e->data, e->size, w, &a) != NDS_OK) continue; /* empty slot */
+                if (mkdirs(out) == 0 && nds_write_wav(out, &a) == NDS_OK) waves++;
+                else failed++;
+                nds_audio_free(&a);
+            }
+        }
+        free(name);
+        free(out);
+    }
+    printf("Extracted %zu files and %zu waves to %s (%zu failed)\n", files, waves, dir, failed);
+    nds_sdat_close(s);
+    free(buf);
+    return failed ? 1 : 0;
+}
+
 int main(int argc, char **argv) {
     if (argc < 2) { usage(argv[0]); return 2; }
     NdsResult r;
@@ -391,6 +540,10 @@ int main(int argc, char **argv) {
     else if (!strcmp(cmd, "list")) cmd_list(rom);
     else if (!strcmp(cmd, "extract-all") && argc > 3) rc = cmd_extract_all(rom, argv[3]);
     else if (!strcmp(cmd, "png-all") && argc > 3) rc = cmd_png_all(rom, argv[3]);
+    else if (!strcmp(cmd, "text") && argc > 3) rc = cmd_text(rom, argv[3]);
+    else if (!strcmp(cmd, "text-all") && argc > 3) rc = cmd_text_all(rom, argv[3]);
+    else if (!strcmp(cmd, "sdat") && argc > 3) rc = cmd_sdat(rom, argv[3]);
+    else if (!strcmp(cmd, "audio") && argc > 4) rc = cmd_audio(rom, argv[3], argv[4]);
     else if (!strcmp(cmd, "anim-all") && argc > 3) rc = cmd_anim_all(rom, argv[3]);
     else if (!strcmp(cmd, "anim") && argc > 4) {
         AnimOpts o = {0};
