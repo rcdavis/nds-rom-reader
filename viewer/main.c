@@ -23,9 +23,10 @@ static void usage(const char *p) {
             "  extract <path> <out> extract one file\n"
             "  extract-all <dir>    extract every file, preserving directories\n"
             "  unpack <path> <out>  extract a file, decompressing it if needed\n"
-            "  png <path> <out.png> [--pal <path>] [--scr <path>] [--width <tiles>] [--bank <n>]\n"
-            "                       render an NCGR graphic (palette/map optional, auto-detected\n"
-            "                       from same-named files in the directory if omitted)\n"
+            "  png <path> <out.png> [--pal <path>] [--scr <path>] [--cer <path>] [--width <tiles>] [--bank <n>]\n"
+            "                       render an NCGR graphic; --scr applies a tile map, --cer\n"
+            "                       assembles sprites from an NCER cell bank. A palette is\n"
+            "                       found from same-named files if omitted\n"
             "  png-all <dir>        render every NCGR graphic in the ROM to PNG files\n",
             p);
 }
@@ -135,7 +136,7 @@ static int cmd_unpack(const NdsRom *rom, const char *path, const char *out) {
 }
 
 typedef struct {
-    const char *pal, *scr;
+    const char *pal, *scr, *cer;
     uint32_t width, bank;
 } RenderOpts;
 
@@ -147,6 +148,7 @@ static int render_png(const NdsRom *rom, const char *gfx, const RenderOpts *o,
     NdsTileSet ts = {0};
     NdsPalette pal = {0};
     NdsScreen scr = {0};
+    NdsCellBank cb = {0};
     NdsImage img = {0};
     int rc = 1;
     NdsResult r = load_unpacked(rom, gfx, &d, &n);
@@ -162,7 +164,14 @@ static int render_png(const NdsRom *rom, const char *gfx, const RenderOpts *o,
         d = NULL;
         if (r != NDS_OK) { fprintf(stderr, "%s: bad palette (%s)\n", o->pal, nds_strerror(r)); goto done; }
     }
-    if (o->scr) {
+    if (o->cer) {
+        r = load_unpacked(rom, o->cer, &d, &n);
+        if (r == NDS_OK) r = nds_cellbank_parse(d, n, &cb);
+        free(d);
+        d = NULL;
+        if (r != NDS_OK) { fprintf(stderr, "%s: bad cell bank (%s)\n", o->cer, nds_strerror(r)); goto done; }
+        r = nds_render_cell_atlas(&cb, &ts, o->pal ? &pal : NULL, &img);
+    } else if (o->scr) {
         r = load_unpacked(rom, o->scr, &d, &n);
         if (r == NDS_OK) r = nds_screen_parse(d, n, &scr);
         free(d);
@@ -179,6 +188,7 @@ done:
     nds_tileset_free(&ts);
     nds_palette_free(&pal);
     nds_screen_free(&scr);
+    nds_cellbank_free(&cb);
     nds_image_free(&img);
     return rc;
 }
@@ -233,16 +243,24 @@ static int cmd_png_all(const NdsRom *rom, const char *dir) {
             if (!same_set(g, c)) continue;
             if (kinds[j] == NDS_KIND_NCLR && !o.pal) o.pal = c->path;
             if (kinds[j] == NDS_KIND_NSCR && !o.scr) o.scr = c->path;
+            if (kinds[j] == NDS_KIND_NCER && !o.cer) o.cer = c->path;
         }
 
-        char *out = malloc(strlen(dir) + strlen(g->path) + 16);
+        char *out = malloc(strlen(dir) + strlen(g->path) + 32);
         if (!out) break;
-        RenderOpts sheet = {o.pal, NULL, 0, 0};
+        RenderOpts sheet = {o.pal, NULL, NULL, 0, 0};
         sprintf(out, "%s/%s.png", dir, g->path);
         int bad = mkdirs(out) != 0 || render_png(rom, g->path, &sheet, out);
         if (!bad && o.scr) {
             sprintf(out, "%s/%s_screen.png", dir, g->path);
-            bad = render_png(rom, g->path, &o, out);
+            RenderOpts m = {o.pal, o.scr, NULL, 0, 0};
+            bad = render_png(rom, g->path, &m, out);
+        }
+        if (!bad && o.cer) {
+            sprintf(out, "%s/%s_cells.png", dir, g->path);
+            RenderOpts cells = {o.pal, NULL, o.cer, 0, 0};
+            /* Banks that contain no visible cells are not an error. */
+            render_png(rom, g->path, &cells, out);
         }
         free(out);
         if (bad) failed++; else done++;
@@ -274,6 +292,7 @@ int main(int argc, char **argv) {
         for (int i = 5; i + 1 < argc; i += 2) {
             if (!strcmp(argv[i], "--pal")) o.pal = argv[i + 1];
             else if (!strcmp(argv[i], "--scr")) o.scr = argv[i + 1];
+            else if (!strcmp(argv[i], "--cer")) o.cer = argv[i + 1];
             else if (!strcmp(argv[i], "--width")) o.width = (uint32_t)strtoul(argv[i + 1], NULL, 0);
             else if (!strcmp(argv[i], "--bank")) o.bank = (uint32_t)strtoul(argv[i + 1], NULL, 0);
             else { usage(argv[0]); nds_close(rom); return 2; }

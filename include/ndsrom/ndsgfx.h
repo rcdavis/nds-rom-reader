@@ -79,6 +79,35 @@ NdsResult nds_render_tiles(const NdsTileSet *ts, const NdsPalette *pal,
 NdsResult nds_render_screen(const NdsTileSet *ts, const NdsPalette *pal,
                             const NdsScreen *scr, NdsImage *out);
 
+/* ---- Cell banks (NCER): sprites assembled from tiles via OAM entries ---- */
+
+typedef struct {
+    uint16_t attr0, attr1, attr2;
+} NdsOam;
+
+typedef struct {
+    uint32_t first_oam, oam_count;
+} NdsCell;
+
+typedef struct {
+    uint32_t cell_count, oam_count;
+    NdsCell *cells;
+    NdsOam *oams;
+    unsigned tile_shift; /* tile index unit is (32 << tile_shift) bytes */
+} NdsCellBank;
+
+NdsResult nds_cellbank_parse(const uint8_t *data, size_t size, NdsCellBank *out);
+void nds_cellbank_free(NdsCellBank *cb);
+
+/* Renders one cell on a canvas sized to its extents. Affine (rotated/scaled)
+   objects are drawn unrotated. */
+NdsResult nds_render_cell(const NdsCellBank *cb, uint32_t cell, const NdsTileSet *ts,
+                          const NdsPalette *pal, NdsImage *out);
+
+/* Renders every cell into a grid atlas. */
+NdsResult nds_render_cell_atlas(const NdsCellBank *cb, const NdsTileSet *ts,
+                                const NdsPalette *pal, NdsImage *out);
+
 NdsResult nds_write_png(const char *path, const NdsImage *img);
 
 #ifdef __cplusplus

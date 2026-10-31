@@ -60,10 +60,41 @@ static void test_render(void) {
     nds_palette_free(&p);
 }
 
+static void test_cells(void) {
+    /* Real-layout bank: one cell, two OAMs (32x16 at -24,-8 and 16x16 at 8,-8). */
+    const uint8_t ncer[] = {
+        'R','E','C','N', 0xFF,0xFE,0,1, 0x44,0,0,0, 0x10,0,1,0,
+        'K','B','E','C', 0x34,0,0,0, 1,0, 0,0, 0x18,0,0,0,
+        0,0,0,0, 0,0,0,0, 0,0,0,0, 0,0,0,0,
+        2,0, 7,0, 0,0,0,0,
+        0xF8,0x40, 0xE8,0x81, 0,0,  0xF8,0x00, 0x08,0x40, 8,0};
+    NdsCellBank cb;
+    CHECK(nds_cellbank_parse(ncer, sizeof ncer, &cb) == NDS_OK);
+    CHECK(cb.cell_count == 1 && cb.oam_count == 2);
+
+    uint8_t gfx[0x30 + 32 * 9] = {'R','G','C','N', 0xFF,0xFE,1,1, 0x50,0,0,0, 0x10,0,1,0,
+                                  'R','A','H','C', 0x40,0,0,0, 1,0,1,0, 3,0,0,0,
+                                  0,0,0,0, 0,0,0,0, 0x20,1,0,0, 0x18,0,0,0};
+    memset(gfx + 0x30, 0x11, 32 * 9);
+    NdsTileSet ts;
+    NdsImage img;
+    CHECK(nds_tileset_parse(gfx, sizeof gfx, &ts) == NDS_OK);
+    CHECK(nds_render_cell(&cb, 0, &ts, NULL, &img) == NDS_OK);
+    CHECK(img.width == 48 && img.height == 16);
+    CHECK(img.rgba[3] == 255); /* top-left pixel belongs to the first OAM */
+    nds_image_free(&img);
+    CHECK(nds_render_cell_atlas(&cb, &ts, NULL, &img) == NDS_OK);
+    nds_image_free(&img);
+    nds_tileset_free(&ts);
+    nds_cellbank_free(&cb);
+    CHECK(nds_cellbank_parse(ncer, 20, &cb) == NDS_ERR_FORMAT);
+}
+
 int main(void) {
     test_rle();
     test_lz();
     test_render();
+    test_cells();
     puts(failures ? "FAILED" : "all tests passed");
     return failures != 0;
 }

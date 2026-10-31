@@ -4,7 +4,7 @@ A Nintendo DS ROM reader in C.
 
 - `ndsrom` – library: `include/ndsrom/ndsrom.h` parses the header and the
   FNT/FAT filesystem and reads/extracts asset files; `include/ndsrom/ndsgfx.h`
-  handles LZ77/RLE decompression, NCLR/NCGR/NSCR graphics and PNG output.
+  handles LZ77/RLE decompression, NCLR/NCGR/NSCR/NCER graphics and PNG output.
 - `ndsviewer` – command-line viewer built on the library.
 
 ## Build
@@ -24,8 +24,9 @@ A Nintendo DS ROM reader in C.
     build/ndsviewer game.nds png-all out_dir                     # render every graphic
 
 `png` finds a palette (and `png-all` a tile map) from same-named files in the
-same directory when not given. Sprite sheets are rendered as raw tile sheets;
-assembling sprites needs NCER cell data, which isn't decoded yet.
+same directory when not given. Sprites are tiles in object-memory order: pass
+`--cer <NCER>` to `png` (or let `png-all` write `*_cells.png`) to assemble them
+into their frames. NANR animation data and 3D formats aren't decoded yet.
 
 ## Test
 
